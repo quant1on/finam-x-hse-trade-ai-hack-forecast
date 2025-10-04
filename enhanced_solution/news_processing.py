@@ -18,7 +18,7 @@ try:
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
-    print("Transformers не установлен. Используется enhanced mock версия")
+    print("Transformers not installed. Enhanced mock version in use")
     pipeline = None
 
 
@@ -89,12 +89,10 @@ class TickerExtractor:
         found_tickers = set()
         text_lower = text.lower()
 
-        # 1. Поиск прямых упоминаний тикеров
         for ticker in self.known_tickers:
             if ticker.lower() in text_lower:
                 found_tickers.add(ticker)
 
-        # 2. Поиск названий компаний
         for company_name, ticker in self.company_to_ticker.items():
             if company_name in text_lower:
                 found_tickers.add(ticker)
@@ -436,7 +434,7 @@ class FinBertSentimentAnalyzer:
         """
 
         if not TRANSFORMERS_AVAILABLE:
-            print("FinBERT недоступен, используется enhanced mock анализ")
+            print("FinBERT unavailable, enhanced mock analysis in use")
             return
 
         try:
@@ -494,7 +492,7 @@ class FinBertSentimentAnalyzer:
             results = self.sentiment_pipeline(cleaned_text)
             return self._process_finbert_results(results)
         except Exception as e:
-            print(f"Ошибка FinBERT анализа: {e}")
+            print(f"FinBERT analysis error: {e}")
             return self._enhanced_mock_sentiment_analysis(cleaned_text)
 
     def analyze_sentiment_with_corporate_events(self, title: str, publication: str,
@@ -507,6 +505,7 @@ class FinBertSentimentAnalyzer:
         :param publication: Текст публикации
         :param tickers: Список тикеров компаний (извлекается автоматически если не указан)
         :param publish_date: Дата публикации новости
+
         :return: Расширенный словарь с sentiment и метриками корпоративных событий
         """
         full_text = f"{title} {publication}"
@@ -723,7 +722,7 @@ class NewsDataProcessor:
     Координирует загрузку, sentiment анализ и создание признаков.
     """
 
-    def __init__(self, data_path: str = "C:/Users/kastc/OneDrive/Desktop/institute_studying_25-26/first_sem/hackatons/finam x hse github/finam-x-hse-trade-ai-hack-forecast/data/raw/participants/"):
+    def __init__(self, data_path: str = "data/raw/participants/"):
         """
         Инициализация процессора с путем к данным и компонентами анализа.
 
