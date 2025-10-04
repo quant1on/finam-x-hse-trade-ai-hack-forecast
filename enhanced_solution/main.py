@@ -60,7 +60,7 @@ class ForecastPipeline:
         print("-" * 40)
 
         try:
-            candles_path = Config.get_data_path('raw', Config.DATA_FILES['candles'])
+            candles_path = os.path.join(Config.DATA_PATHS['raw_participants'], Config.DATA_FILES['candles'])
             if not os.path.exists(candles_path):
                 print(f"Candles file not found: {candles_path}")
                 return False
@@ -69,7 +69,7 @@ class ForecastPipeline:
             self.results['candles_raw'] = candles_df
             print(f"Candles loaded: {len(candles_df)} records, {candles_df['ticker'].nunique()} tickers")
 
-            news_path = Config.get_data_path('raw', Config.DATA_FILES['news'])
+            news_path = os.path.join(Config.DATA_PATHS['raw_participants'], Config.DATA_FILES['news'])
             if not os.path.exists(news_path):
                 print(f"News file not found: {news_path}")
                 return False
@@ -91,6 +91,31 @@ class ForecastPipeline:
             print(f"Data loading error: {e}")
             return False
 
+    def load_external_sentiment_features(self) -> bool:
+        path = os.path.join(Config.DATA_PATHS['processed_participants'], Config.DATA_FILES['processed_sentiment'])
+
+        if not os.path.exists(path):
+                print(f"Sentiment features file not found: {path}")
+                return False
+        
+        sentiment_features = pd.read_csv(path)
+        self.results['sentiment_features'] = sentiment_features
+
+        print(f"Sentiment features created: {len(sentiment_features)} records")
+        print(f"Columns: {len(sentiment_features.columns)}")
+        print(f"Tickers with sentiment: {sentiment_features['ticker'].nunique()}")
+
+        if 'sentiment_mean' in sentiment_features.columns:
+            sentiment_stats = sentiment_features['sentiment_mean'].describe()
+            print(f"Sentiment statistics: mean={sentiment_stats['mean']:.3f}, std={sentiment_stats['std']:.3f}")
+
+        if 'total_corporate_events' in sentiment_features.columns:
+            corp_events_total = sentiment_features['total_corporate_events'].sum()
+            print(f"Total corporate events: {int(corp_events_total)}")
+
+        return True
+
+
     def step2_aggregate_news(self) -> bool:
         """
         Шаг 2: Агрегация новостей с анализом тональности.
@@ -106,10 +131,7 @@ class ForecastPipeline:
         print("-" * 40)
 
         try:
-            sentiment_features = process_news_for_patchtst(
-                datapath=Config.DATA_PATHS['raw'],
-                news_filename=Config.DATA_FILES['news']
-            )
+            sentiment_features = process_news_for_patchtst()
 
             if sentiment_features.empty:
                 print("Failed to process news")
@@ -195,8 +217,8 @@ class ForecastPipeline:
 
         try:
             result = prepare_data_for_patchtst(
-                candles_path=Config.get_data_path('raw', Config.DATA_FILES['candles']),
-                sentiment_path=Config.get_data_path('processed', Config.DATA_FILES['processed_sentiment']),
+                candles_path=os.path.join(Config.DATA_PATHS['raw_participants'], Config.DATA_FILES['candles']),
+                sentiment_path=os.path.join(Config.DATA_PATHS['processed_participants'], Config.DATA_FILES['processed_sentiment']),
                 output_path=Config.DATA_PATHS['processed'],
                 target_column='close'
             )
@@ -526,6 +548,7 @@ class ForecastPipeline:
             ("PatchTST preparation", self.step4_prepare_patchtst_data),
             ("Model training", self.step5_train_model),
             ("Testing", self.step6_test_model),
+            ("Create submission", self.create_submission_file),
             ("Statistics export", self.step7_export_statistics)
         ]
 
@@ -545,53 +568,152 @@ class ForecastPipeline:
         print("=" * 60)
 
         return True
+    
+    def create_submission_file(self) -> bool:
+        """Создание submission файла для хакатона FORECAST."""
+        print("📄 CREATING SUBMISSION FILE")
+        print("-" * 40)
+        
+        try:
+            # Проверяем модель
+            if not self.model or not self.model.is_trained:
+                print("❌ Model not trained")
+                return False
+            
+            # Получаем тестовые данные  
+            test_data = self.results.get('test_data', {})
+            X_test = test_data.get('X_test')
+            
+            if X_test is None:
+                print("❌ No test data")
+                return False
+            
+            # Генерируем предсказания
+            predictions = self.model.predict(X_test)
+            
+            # Извлекаем метаданные
+            sequences = self.results.get('patchtst_data', {}).get('sequences', {})
+            test_tickers = sequences.get('tickers', [])[-len(X_test):]
+            test_dates = sequences.get('dates', [])[-len(X_test):]
+            
+            # Создаем submission записи
+            submission_data = []
+            for i in range(len(predictions['return_1d'])):
+                prob_1d = self._return_to_probability(predictions['return_1d'][i], '1d')
+                prob_20d = self._return_to_probability(predictions['return_20d'][i], '20d')
+                
+                record = {
+                    'ticker': test_tickers[i] if i < len(test_tickers) else f'T_{i}',
+                    'day': test_dates[i] if i < len(test_dates) else f'2024-01-{15+i:02d}',
+                    'return_1d': float(predictions['return_1d'][i]),
+                    'prob_return_1d_positive': prob_1d,
+                    'return_20d': float(predictions['return_20d'][i]), 
+                    'prob_return_20d_positive': prob_20d
+                }
+                submission_data.append(record)
+            
+            # Сохраняем CSV
+            submission_df = pd.DataFrame(submission_data)
+            submission_path = Config.get_data_path('results', 'forecast_submission.csv')
+            submission_df.to_csv(submission_path, index=False, float_format='%.6f')
+            
+            print(f"✅ Submission saved: {submission_path}")
+            print(f"📊 Records: {len(submission_df)}, Tickers: {submission_df['ticker'].nunique()}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            return False
+
+    def _return_to_probability(self, return_value: float, horizon: str) -> float:
+        """Конвертация доходности в вероятность роста."""
+        import math
+        scaling = {'1d': 10.0, '20d': 5.0}
+        factor = scaling.get(horizon, 7.0)
+        
+        try:
+            prob = 1 / (1 + math.exp(-return_value * factor))
+        except OverflowError:
+            prob = 0.95 if return_value > 0 else 0.05
+        
+        return max(0.05, min(0.95, prob))
+
+
 
 
 def main():
     """
     Главная функция для выполнения пайплайна.
-
+    
     Парсит аргументы командной строки, инициализирует пайплайн и выполняет
     запрошенные шаги с правильной обработкой ошибок и кодами выхода.
     """
     parser = argparse.ArgumentParser(description="FORECAST Hackathon - Full Pipeline")
-    parser.add_argument('--steps', choices=['all', 'data', 'news', 'adf', 'patchtst', 'train', 'test', 'export'],
-                       default='all', help='Which steps to execute')
+    
+    parser.add_argument(
+        '--steps', 
+        nargs='+',
+        choices=['all', 'data', 'news', 'adf', 'patchtst', 'train', 'test', 'export', 'create_submission', 'load_external_sentiments'],
+        default=['all'], 
+        help='Which steps to execute (можно указать несколько через пробел)'
+    )
+    
     parser.add_argument('--train-ratio', type=float, default=0.7, help='Training data proportion')
     parser.add_argument('--val-ratio', type=float, default=0.15, help='Validation data proportion')
-
+    
     args = parser.parse_args()
-
+    
     pipeline = ForecastPipeline()
-
+    
+    steps_map = {
+        'data': pipeline.step1_load_data,
+        'news': pipeline.step2_aggregate_news,
+        'adf': pipeline.step3_stationarity_test,
+        'patchtst': pipeline.step4_prepare_patchtst_data,
+        'train': pipeline.step5_train_model,
+        'test': pipeline.step6_test_model,
+        'export': pipeline.step7_export_statistics,
+        'create_submission': pipeline.create_submission_file,
+        'load_external_sentiments': pipeline.load_external_sentiment_features
+    }
+    
     try:
-        if args.steps == 'all':
+        if 'all' in args.steps:
             success = pipeline.run_full_pipeline()
-        elif args.steps == 'data':
-            success = pipeline.step1_load_data()
-        elif args.steps == 'news':
-            success = pipeline.step2_aggregate_news()
-        elif args.steps == 'adf':
-            success = pipeline.step3_stationarity_test()
-        elif args.steps == 'patchtst':
-            success = pipeline.step4_prepare_patchtst_data()
-        elif args.steps == 'train':
-            success = pipeline.step5_train_model(args.train_ratio, args.val_ratio)
-        elif args.steps == 'test':
-            success = pipeline.step6_test_model()
-        elif args.steps == 'export':
-            success = pipeline.step7_export_statistics()
         else:
-            print(f"Unknown step: {args.steps}")
-            success = False
-
+            success = True
+            print(f"EXECUTING STEPS: {' -> '.join(args.steps)}")
+            print("=" * 60)
+            
+            for i, step_name in enumerate(args.steps, 1):
+                if step_name not in steps_map:
+                    print(f"Unknown step: {step_name}")
+                    success = False
+                    break
+                
+                print(f"\nSTEP {i}/{len(args.steps)}: {step_name.upper()}")
+                print("-" * 40)
+                
+                step_function = steps_map[step_name]
+                if not step_function():
+                    print(f"FAILED AT STEP: {step_name}")
+                    success = False
+                    break
+                
+                print(f"COMPLETED: {step_name}")
+            
+            if success:
+                print("\nALL SELECTED STEPS COMPLETED SUCCESSFULLY!")
+                print("=" * 60)
+        
         if success:
             print("\nOPERATION COMPLETED SUCCESSFULLY!")
             sys.exit(0)
         else:
             print("\nOPERATION COMPLETED WITH ERROR!")
             sys.exit(1)
-
+            
     except KeyboardInterrupt:
         print("\nInterrupted by user")
         sys.exit(1)
@@ -600,7 +722,6 @@ def main():
         import traceback
         print(traceback.format_exc())
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()

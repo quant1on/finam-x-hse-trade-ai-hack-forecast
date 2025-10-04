@@ -4,6 +4,7 @@ from typing import Dict, List
 import re
 from datetime import datetime, timedelta
 from dataclasses import dataclass
+from config import Config
 import warnings
 import os
 
@@ -51,30 +52,9 @@ class TickerExtractor:
 
                 :return: None
                 """
-        self.known_tickers = {
-            'SBER', 'GAZP', 'YNDX', 'LKOH', 'GMKN', 'NVTK', 'ROSN', 'PLZL',
-            'TATN', 'MGNT', 'CHMF', 'NLMK', 'AFLT', 'VTBR', 'POLY', 'RTKM',
-            'FIVE', 'FIXP', 'IRAO', 'DSKY', 'QIWI', 'MAIL', 'OZON', 'ALRS',
-            'MTSS', 'RUAL', 'SNGS', 'TRNFP', 'UPRO', 'FEES', 'MOEX', 'TCSG'
-        }
+        self.known_tickers = Config.RUSSIAN_TICKERS['known_tickers']
 
-        self.company_to_ticker = {
-            'сбербанк': 'SBER', 'сбер': 'SBER', 'sberbank': 'SBER', 'sber': 'SBER',
-            'газпром': 'GAZP', 'gazprom': 'GAZP',
-            'яндекс': 'YNDX', 'yandex': 'YNDX',
-            'лукойл': 'LKOH', 'lukoil': 'LKOH',
-            'норникель': 'GMKN', 'новатэк': 'NVTK',
-            'роснефть': 'ROSN', 'rosneft': 'ROSN',
-            'полюс': 'PLZL', 'polyus': 'PLZL',
-            'татнефть': 'TATN', 'tatneft': 'TATN',
-            'магнит': 'MGNT', 'magnit': 'MGNT',
-            'северсталь': 'CHMF', 'severstal': 'CHMF',
-            'нлмк': 'NLMK', 'nlmk': 'NLMK',
-            'аэрофлот': 'AFLT', 'aeroflot': 'AFLT',
-            'втб': 'VTBR', 'vtb': 'VTBR',
-            'полиметалл': 'POLY', 'polymetal': 'POLY',
-            'ростелеком': 'RTKM', 'rostelecom': 'RTKM'
-        }
+        self.company_to_ticker = Config.RUSSIAN_TICKERS['company_to_ticker']
 
     def extract_tickers_from_text(self, text: str) -> List[str]:
         """
@@ -411,8 +391,12 @@ class FinBertSentimentAnalyzer:
     Использует предтренированную модель ProsusAI/finbert для анализа финансовых текстов.
     """
 
-    def __init__(self, model_name: str = "ProsusAI/finbert"):
-        self.model_name = model_name
+    def __init__(self):
+        self.model_name = Config.FINBERT_CONFIG['model_name']
+        self.max_length = Config.FINBERT_CONFIG['max_length']
+        self.batch_size = Config.FINBERT_CONFIG['batch_size']
+        self.device = Config.FINBERT_CONFIG['device']
+
         self.sentiment_pipeline = None
         self.corporate_detector = CorporateEventsDetector()
         self.ticker_extractor = TickerExtractor()
@@ -468,7 +452,7 @@ class FinBertSentimentAnalyzer:
         text = re.sub(r'\b([A-Z]{2,5})\b', r' \1 ', text)
 
         # Ограничение длины для FinBERT
-        if len(text) > 450:
+        if len(text) > self.max_length:
             text = text[:200] + " ... " + text[-200:]
 
         return text.strip()
@@ -879,10 +863,10 @@ class SentimentAggregator:
     def __init__(self):
         """
         Инициализация агрегатора sentiment данных.
-
-        :return: None
         """
-        pass
+        self.rolling_windows = Config.SENTIMENT_CONFIG['rolling_windows']
+        self.confidence_threshold = Config.SENTIMENT_CONFIG['confidence_threshold']
+        self.corporate_events_weight = Config.SENTIMENT_CONFIG['corporate_events_weight']
 
     def parse_tickers_string(self, tickers_str: str) -> List[str]:
         """
@@ -1006,7 +990,7 @@ class SentimentAggregator:
             mask = df_sorted['ticker'] == ticker
             ticker_data = df_sorted[mask]
 
-            for window in [3, 7, 14]:
+            for window in self.rolling_windows:
                 col_name = f'sentiment_ma_{window}'
                 if col_name not in df_sorted.columns:
                     df_sorted[col_name] = 0.0
@@ -1045,8 +1029,8 @@ class SentimentAggregator:
         return df_sorted.fillna(0)
 
 
-def process_news_for_patchtst(data_path: str = "C:/Users/kastc/OneDrive/Desktop/institute_studying_25-26/first_sem/hackatons/finam x hse github/finam-x-hse-trade-ai-hack-forecast/data/raw/participants/",
-                              news_filename: str = "train_news.csv") -> pd.DataFrame:
+def process_news_for_patchtst(data_path: str = Config.DATA_PATHS['raw_participants'],
+                              news_filename: str = Config.DATA_FILES['news']) -> pd.DataFrame:
     """
     ГЛАВНАЯ ФУНКЦИЯ обработки новостей для PatchTST модели.
     Координирует весь пайплайн от загрузки до создания признаков.
@@ -1087,10 +1071,10 @@ def process_news_for_patchtst(data_path: str = "C:/Users/kastc/OneDrive/Desktop/
     output_dir = data_path.replace('raw', 'processed')
     os.makedirs(output_dir, exist_ok=True)
 
-    sentiment_output_path = os.path.join(output_dir, 'processed_sentiment_features.csv')
+    sentiment_output_path = os.path.join(output_dir, Config.DATA_FILES['processed_sentiment'])
     sentiment_features.to_csv(sentiment_output_path, index=False)
 
-    news_output_path = os.path.join(output_dir, 'processed_news_with_corporate_events.csv')
+    news_output_path = os.path.join(output_dir, Config.DATA_FILES['processed_news_with_corporate_events'])
     processed_news.to_csv(news_output_path, index=False)
 
     print(f"Результаты сохранены:")

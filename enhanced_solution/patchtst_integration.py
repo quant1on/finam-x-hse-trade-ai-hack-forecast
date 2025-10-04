@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta
 
 from news_processing import SentimentAggregator
+from config import Config
 
 
 class PatchTSTDataIntegrator:
@@ -13,11 +14,7 @@ class PatchTSTDataIntegrator:
     Объединяет котировки акций, sentiment из новостей и технические индикаторы.
     """
 
-    def __init__(self,
-                 context_length: int = 20,
-                 prediction_length: int = 1,
-                 patch_length: int = 5,
-                 stride: int = 2):
+    def __init__(self):
         """
         Инициализация интегратора с параметрами PatchTST архитектуры.
 
@@ -27,19 +24,31 @@ class PatchTSTDataIntegrator:
         :param stride: Шаг между патчами
         :return: None
         """
-        self.context_length = context_length
-        self.prediction_length = prediction_length
-        self.patch_length = patch_length
-        self.stride = stride
+        patchtst_config = Config.PATCHTST_CONFIG
+        self.context_length = patchtst_config['context_length']
+        self.prediction_length = patchtst_config['prediction_length']
+        self.patch_length = patchtst_config['patch_length']
+        self.stride = patchtst_config['stride']
+        
+        self.sma_windows = Config.TECHNICAL_INDICATORS_CONFIG['sma_windows']
+        self.ema_spans = Config.TECHNICAL_INDICATORS_CONFIG['ema_spans']
+        self.rsi_period = Config.TECHNICAL_INDICATORS_CONFIG['rsi_period']
+        self.macd_signal = Config.TECHNICAL_INDICATORS_CONFIG['macd_signal']
+        self.bollinger_period = Config.TECHNICAL_INDICATORS_CONFIG['bollinger_period']
+        self.bollinger_std = Config.TECHNICAL_INDICATORS_CONFIG['bollinger_std']
+        self.volatility_window = Config.TECHNICAL_INDICATORS_CONFIG['volatility_window']
+        
+        self.min_sequence_length = Config.VALIDATION_CONFIG['min_sequence_length']
+        self.max_missing_ratio = Config.VALIDATION_CONFIG['max_missing_ratio']
 
         self.sentiment_aggregator = SentimentAggregator()
 
         print(f"PatchTST Data Integrator инициализирован:")
-        print(f"Context: {context_length}, Prediction: {prediction_length}")
-        print(f"Patch: {patch_length}, Stride: {stride}")
+        print(f"Context: {self.context_length}, Prediction: {self.prediction_length}")
+        print(f"Patch: {self.patch_length}, Stride: {self.stride}")
 
-    def load_candles_data(self, data_path: str = "data/raw/",
-                          filename: str = "train_candles.csv") -> pd.DataFrame:
+    def load_candles_data(self, data_path: str = Config.DATA_PATHS['raw_participants'],
+                          filename: str = Config.DATA_FILES['candles']) -> pd.DataFrame:
         """
         Загрузка данных котировок акций с валидацией структуры и целевых переменных.
 
@@ -83,8 +92,8 @@ class PatchTSTDataIntegrator:
             print(f"Ошибка загрузки котировок: {e}")
             return pd.DataFrame()
 
-    def load_sentiment_features(self, data_path: str = "data/processed/",
-                                filename: str = "processed_sentiment_features.csv") -> pd.DataFrame:
+    def load_sentiment_features(self, data_path: str = Config.DATA_PATHS['processed_participants'],
+                                filename: str = Config.DATA_FILES['processed_sentiment']) -> pd.DataFrame:
         """
         Загрузка обработанных sentiment признаков из новостных данных.
 
@@ -423,7 +432,7 @@ class PatchTSTDataIntegrator:
         :param target_column: Название целевой колонки
         :return: Словарь с конфигурацией модели
         """
-        if not sequences or not sequences.get('X') or len(sequences['X']) == 0:
+        if not sequences or sequences.get('X') is None or len(sequences['X']) == 0:
             print("Нет последовательностей для конфигурации")
             return {}
 
@@ -536,12 +545,7 @@ def prepare_data_for_patchtst(candles_path: str = "data/raw/train_candles.csv",
     print("ПОДГОТОВКА ДАННЫХ ДЛЯ PATCHTST - ЧАСТЬ B")
     print("=" * 60)
 
-    integrator = PatchTSTDataIntegrator(
-        context_length=20,  # 20 дней истории
-        prediction_length=1,  # Прогноз на 1 день
-        patch_length=5,  # Патчи по 5 дней
-        stride=2  # Шаг 2 дня
-    )
+    integrator = PatchTSTDataIntegrator()
 
     print("\n📊 Загрузка данных:")
     candles_df = integrator.load_candles_data(

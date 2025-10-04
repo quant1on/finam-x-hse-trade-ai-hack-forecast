@@ -8,6 +8,17 @@ from transformers import PatchTSTModel
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import joblib
 
+def check_gpu():
+    if torch.cuda.is_available():
+        device_name = torch.cuda.get_device_name(0)
+        vram = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        print(f"🚀 GPU обнаружен: {device_name} ({vram:.1f} GB VRAM)")
+        return True
+    else:
+        print("⚠️ GPU недоступен, используем CPU")
+        return False
+
+
 
 class ForecastPatchTST:
     """PatchTST модель для задачи FORECAST"""
@@ -17,6 +28,11 @@ class ForecastPatchTST:
         # Конфигурация PatchTST
         self.config = PatchTSTConfig(**ModelConfig)
         
+        self.context_length = ModelConfig['context_length']
+        self.prediction_length = ModelConfig['prediction_length'] 
+        self.num_input_channels = ModelConfig['num_input_channels']
+        self.patch_length = ModelConfig.get('patch_length', 12)
+
         self.model = None
         self.is_trained = False
         
@@ -27,8 +43,18 @@ class ForecastPatchTST:
     def _create_model(self):
         """Создание модели PatchTST"""
         if self.model is None:
-            # Используем PatchTSTForPrediction для forecasting задач
+
+            gpu_available = check_gpu()
+            
+
             self.model = PatchTSTForPrediction(self.config)
+
+            if gpu_available:
+                self.model = self.model.cuda()
+                print('✅ PatchTST модель перенесена на GPU')
+                
+            self.model.train()
+            print(f"📊 Модель создана: {sum(p.numel() for p in self.model.parameters())} параметров")
     
     def prepare_data_for_patchtst(self, X: np.ndarray, y: np.ndarray = None) -> Dict:
         """
@@ -40,7 +66,8 @@ class ForecastPatchTST:
         # Наши данные уже в правильном формате
         
         # Конвертируем в torch tensors
-        past_values = torch.tensor(X, dtype=torch.float32)
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        past_values = torch.tensor(X, dtype=torch.float32).to(device)
         
         data_dict = {
             'past_values': past_values
@@ -52,12 +79,13 @@ class ForecastPatchTST:
             # Но нам нужны только специфические горизонты (1d, 20d)
             
             # Создаем "фиктивные" future_values для compatibility
-            batch_size = X.shape
+            batch_size = X.shape[0]
             # Повторяем последний таргет для всех prediction_length шагов
-            future_values = torch.zeros(batch_size, self.prediction_length, self.num_input_channels)
+            future_values = torch.zeros(batch_size, self.prediction_length, 
+                           self.num_input_channels, device=device)
             
             data_dict['future_values'] = future_values
-            data_dict['targets'] = torch.tensor(y, dtype=torch.float32)
+            data_dict['targets'] = torch.tensor(y, dtype=torch.float32).to(device)
         
         return data_dict
     
@@ -75,6 +103,12 @@ class ForecastPatchTST:
         print(f"   Patch length: {self.patch_length}")
         
         self._create_model()
+
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f"🎯 Обучение на устройстве: {device}")
+    
+        if device == 'cuda':
+            torch.cuda.empty_cache()
         
         train_data = self.prepare_data_for_patchtst(X_train, y_train)
         val_data = self.prepare_data_for_patchtst(X_val, y_val)
